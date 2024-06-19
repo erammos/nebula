@@ -1,0 +1,5 @@
+[wrap-git]
+directory=cglm
+url=https://github.com/recp/cglm
+revision=v0.9.4
+depth=1

@@ -1,0 +1,5 @@
+[wrap-git]
+directory=Unity
+url=https://github.com/ThrowTheSwitch/Unity.git
+revision=v2.6.0
+depth=1
