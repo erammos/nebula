@@ -6,6 +6,7 @@
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_core.h>
 #include "utils.h"
+#include <cglm/cglm.h>
 
 #define NUM_VALIDATION_LAYERS 1
 #define NUM_DEVICE_EXTENSIONS 1
@@ -33,6 +34,39 @@ typedef struct {
 	uint32_t presentFamily;
 } QueueFamilyIndices;
 
+typedef struct {
+	vec2 pos;
+	vec3 color;
+} Vertex;
+
+const Vertex vertices[] = { { { 0.0f, -0.5f }, { 1.0f, 0.0f, 0.0f } },
+			    { { 0.5f, 0.5f }, { 0.0f, 1.0f, 0.0f } },
+			    { { -0.5f, 0.5f }, { 0.0f, 0.0f, 1.0f } } };
+const size_t num_vertices = 3;
+
+VkVertexInputAttributeDescription attributeDescriptions[2];
+static VkVertexInputBindingDescription vert_get_binding_description()
+{
+	VkVertexInputBindingDescription bindingDescription = {};
+	bindingDescription.binding = 0;
+	bindingDescription.stride = sizeof(Vertex);
+	bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+	return bindingDescription;
+}
+static VkVertexInputAttributeDescription *vert_get_attributes_description()
+{
+	attributeDescriptions[0].binding = 0;
+	attributeDescriptions[0].location = 0;
+	attributeDescriptions[0].format = VK_FORMAT_R32G32_SFLOAT;
+	attributeDescriptions[0].offset = offsetof(Vertex, pos);
+
+	attributeDescriptions[1].binding = 0;
+	attributeDescriptions[1].location = 1;
+	attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+	attributeDescriptions[1].offset = offsetof(Vertex, color);
+	return attributeDescriptions;
+}
 static SDL_Window *window;
 static VkInstance instance;
 static VkPhysicalDevice physical_device;
@@ -55,7 +89,8 @@ static VkCommandBuffer command_buffer;
 static VkSemaphore image_available_semaphore;
 static VkSemaphore render_finished_semaphore;
 static VkFence in_flight_fence;
-
+static VkBuffer vertexBuffer;
+static VkDeviceMemory vertexBufferMemory;
 static void app_init_window();
 static void app_init_vulkan();
 static void app_main_loop();
@@ -76,6 +111,8 @@ static void vk_create_framebuffers();
 static void vk_create_command_pool();
 static void vk_create_command_buffer();
 static void vk_create_sync_objects();
+static void vk_create_vertex_buffer();
+
 void vk_record_command_buffer(VkCommandBuffer commandBuffer,
 			      uint32_t imageIndex);
 static void vk_draw_frame();
@@ -108,10 +145,38 @@ void app_init_vulkan()
 	vk_create_graphics_pipeline();
 	vk_create_framebuffers();
 	vk_create_command_pool();
+	vk_create_vertex_buffer();
 	vk_create_command_buffer();
 	vk_create_sync_objects();
 }
 
+void vk_create_vertex_buffer()
+{
+	VkBufferCreateInfo bufferInfo = {};
+	bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+	bufferInfo.size = sizeof(vertices[0]) * num_vertices;
+	bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+	bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	if (vkCreateBuffer(device, &bufferInfo, nullptr, &vertexBuffer) !=
+	    VK_SUCCESS) {
+		fprintf(stderr, "Can't create buffer");
+		exit(1);
+	}
+	VkMemoryAllocateInfo allocInfo = {};
+	allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+	allocInfo.allocationSize = 1024;
+	allocInfo.memoryTypeIndex = 0;
+	if (vkAllocateMemory(device, &allocInfo, nullptr,
+			     &vertexBufferMemory) != VK_SUCCESS) {
+		fprintf(stderr, "Can't allocate memory");
+		exit(1);
+	}
+	vkBindBufferMemory(device, vertexBuffer, vertexBufferMemory, 0);
+	void *data;
+	vkMapMemory(device, vertexBufferMemory, 0, bufferInfo.size, 0, &data);
+	memcpy(data, vertices, (size_t)bufferInfo.size);
+	vkUnmapMemory(device, vertexBufferMemory);
+}
 void vk_create_sync_objects()
 {
 	VkSemaphoreCreateInfo semaphoreInfo = {};
@@ -154,6 +219,7 @@ void vk_record_command_buffer(VkCommandBuffer commandBuffer,
 			     VK_SUBPASS_CONTENTS_INLINE);
 	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
 			  graphics_pipeline);
+
 	VkViewport viewport = {};
 	viewport.x = 0.0f;
 	viewport.y = 0.0f;
@@ -167,7 +233,11 @@ void vk_record_command_buffer(VkCommandBuffer commandBuffer,
 	scissor.offset = (VkOffset2D){ 0, 0 };
 	scissor.extent = swap_chain_extent;
 	vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
-	vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+
+	VkBuffer vertexBuffers[] = { vertexBuffer };
+	VkDeviceSize offsets[] = { 0 };
+	vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+	vkCmdDraw(commandBuffer, num_vertices, 1, 0, 0);
 	vkCmdEndRenderPass(commandBuffer);
 	if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
 		fprintf(stderr, "failed to record command buffer!");
@@ -310,13 +380,17 @@ void vk_create_graphics_pipeline()
 		vertShaderStageInfo, fragShaderStageInfo
 	};
 
+	auto bindingDescription = vert_get_binding_description();
+	auto attributeDescriptions = vert_get_attributes_description();
+
 	VkPipelineVertexInputStateCreateInfo vertexInputInfo = {};
 	vertexInputInfo.sType =
 		VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-	vertexInputInfo.vertexBindingDescriptionCount = 0;
-	vertexInputInfo.pVertexBindingDescriptions = nullptr; // Optional
-	vertexInputInfo.vertexAttributeDescriptionCount = 0;
-	vertexInputInfo.pVertexAttributeDescriptions = nullptr;
+
+	vertexInputInfo.vertexBindingDescriptionCount = 1;
+	vertexInputInfo.vertexAttributeDescriptionCount = 2;
+	vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+	vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions;
 
 	VkPipelineInputAssemblyStateCreateInfo inputAssembly = {};
 	inputAssembly.sType =
@@ -713,6 +787,8 @@ void app_main_loop()
 
 void app_clean_up()
 {
+	vkFreeMemory(device, vertexBufferMemory, nullptr);
+	vkDestroyBuffer(device, vertexBuffer, nullptr);
 	vkDestroySemaphore(device, image_available_semaphore, nullptr);
 	vkDestroySemaphore(device, render_finished_semaphore, nullptr);
 	vkDestroyFence(device, in_flight_fence, nullptr);
