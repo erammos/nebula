@@ -40,11 +40,13 @@ typedef struct {
 	vec2 pos;
 	vec3 color;
 } Vertex;
+
 typedef struct {
 	mat4 model;
 	mat4 view;
 	mat4 proj;
 } UniformBufferObject;
+
 const Vertex vertices[] = { { { -0.5f, -0.5f }, { 1.0f, 0.0f, 0.0f } },
 			    { { 0.5f, -0.5f }, { 0.0f, 1.0f, 0.0f } },
 			    { { 0.5f, 0.5f }, { 0.0f, 0.0f, 1.0f } },
@@ -109,7 +111,6 @@ static VkDeviceMemory uniformBufferMemory;
 static VkDescriptorPool descriptorPool;
 static VkDescriptorSet descriptorSets[NUM_DESCRIPTOR_SETS];
 static void *uniformBufferMapped;
-static void createDescriptorSetLayout();
 static void app_init_window();
 static void app_init_vulkan();
 static void app_main_loop();
@@ -132,13 +133,14 @@ static void vk_create_command_buffer();
 static void vk_create_sync_objects();
 static void vk_create_vertex_buffer();
 static void vk_create_index_buffer();
-static void createUniformBuffers();
+static void vk_create_uniform_buffer();
 static void vk_record_command_buffer(VkCommandBuffer commandBuffer,
 				     uint32_t imageIndex);
 static void vk_draw_frame();
-static void updateUniformBuffer();
-static void createDescriptorPool();
-static void createDescriptorSets();
+static void update_uniform_buffer();
+static void vk_create_descriptor_set_layout();
+static void vk_create_descriptor_pool();
+static void vk_create_descriptor_sets();
 void app_run()
 {
 	app_init_window();
@@ -164,10 +166,10 @@ void app_init_vulkan()
 	vk_create_swap_chain();
 	vk_create_image_views();
 	vk_create_render_pass();
-	createUniformBuffers();
-	createDescriptorSetLayout();
-	createDescriptorPool();
-	createDescriptorSets();
+	vk_create_uniform_buffer();
+	vk_create_descriptor_set_layout();
+	vk_create_descriptor_pool();
+	vk_create_descriptor_sets();
 	vk_create_graphics_pipeline();
 	vk_create_framebuffers();
 	vk_create_command_pool();
@@ -212,7 +214,7 @@ void vk_create_mapped_buffer(VkDevice device, void *src, VkBuffer *buffer,
 	vkUnmapMemory(device, *memory);
 }
 
-void createDescriptorPool()
+void vk_create_descriptor_pool()
 {
 	VkDescriptorPoolSize poolSize = {};
 	poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -229,7 +231,7 @@ void createDescriptorPool()
 		exit(1);
 	}
 }
-void createDescriptorSets()
+void vk_create_descriptor_sets()
 {
 	VkDescriptorSetLayout layouts[] = { descriptorSetLayout };
 	VkDescriptorSetAllocateInfo allocInfo = {};
@@ -258,7 +260,7 @@ void createDescriptorSets()
 	descriptorWrite.pTexelBufferView = nullptr; // Optional
 	vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);
 }
-void createDescriptorSetLayout()
+void vk_create_descriptor_set_layout()
 {
 	VkDescriptorSetLayoutBinding uboLayoutBinding = {};
 	uboLayoutBinding.binding = 0;
@@ -277,7 +279,7 @@ void createDescriptorSetLayout()
 	}
 }
 
-void createUniformBuffers()
+void vk_create_uniform_buffer()
 {
 	VkDeviceSize bufferSize = sizeof(UniformBufferObject);
 
@@ -864,7 +866,7 @@ float interpolate(float from, float to, float progress)
 }
 float elapsed = 0;
 float current = 0;
-void updateUniformBuffer()
+void update_uniform_buffer()
 {
 	clock_t start = clock();
 	UniformBufferObject ubo = {};
@@ -911,7 +913,7 @@ void vk_draw_frame()
 	VkSemaphore signalSemaphores[] = { render_finished_semaphore };
 	submitInfo.signalSemaphoreCount = 1;
 	submitInfo.pSignalSemaphores = signalSemaphores;
-	updateUniformBuffer();
+	update_uniform_buffer();
 	if (vkQueueSubmit(graphics_queue, 1, &submitInfo, in_flight_fence) !=
 	    VK_SUCCESS) {
 		fprintf(stderr, "Failed to submit command in queue");
