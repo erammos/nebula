@@ -7,9 +7,11 @@
 #include <vulkan/vulkan_core.h>
 #include "utils.h"
 #include <cglm/cglm.h>
+#include <time.h>
 
 #define NUM_VALIDATION_LAYERS 1
 #define NUM_DEVICE_EXTENSIONS 1
+#define NUM_DESCRIPTOR_SETS 1
 #define WIDTH 800
 #define HEIGHT 600
 
@@ -38,11 +40,19 @@ typedef struct {
 	vec2 pos;
 	vec3 color;
 } Vertex;
+typedef struct {
+	mat4 model;
+	mat4 view;
+	mat4 proj;
+} UniformBufferObject;
+const Vertex vertices[] = { { { -0.5f, -0.5f }, { 1.0f, 0.0f, 0.0f } },
+			    { { 0.5f, -0.5f }, { 0.0f, 1.0f, 0.0f } },
+			    { { 0.5f, 0.5f }, { 0.0f, 0.0f, 1.0f } },
+			    { { -0.5f, 0.5f }, { 1.0f, 1.0f, 1.0f } } };
 
-const Vertex vertices[] = { { { 0.0f, -0.5f }, { 1.0f, 0.0f, 0.0f } },
-			    { { 0.5f, 0.5f }, { 0.0f, 1.0f, 0.0f } },
-			    { { -0.5f, 0.5f }, { 0.0f, 0.0f, 1.0f } } };
-const size_t num_vertices = 3;
+const size_t num_vertices = 4;
+const uint16_t indices[] = { 0, 1, 2, 2, 3, 0 };
+const size_t num_indices = 6;
 
 VkVertexInputAttributeDescription attributeDescriptions[2];
 static VkVertexInputBindingDescription vert_get_binding_description()
@@ -83,6 +93,7 @@ static VkExtent2D swap_chain_extent;
 static VkImageView *swap_chain_image_views;
 static VkPipelineLayout pipeline_layout;
 static VkRenderPass render_pass;
+static VkDescriptorSetLayout descriptorSetLayout;
 static VkPipeline graphics_pipeline;
 static VkCommandPool command_pool;
 static VkCommandBuffer command_buffer;
@@ -91,6 +102,14 @@ static VkSemaphore render_finished_semaphore;
 static VkFence in_flight_fence;
 static VkBuffer vertexBuffer;
 static VkDeviceMemory vertexBufferMemory;
+static VkBuffer indexBuffer;
+static VkDeviceMemory indexBufferMemory;
+static VkBuffer uniformBuffer;
+static VkDeviceMemory uniformBufferMemory;
+static VkDescriptorPool descriptorPool;
+static VkDescriptorSet descriptorSets[NUM_DESCRIPTOR_SETS];
+static void *uniformBufferMapped;
+static void createDescriptorSetLayout();
 static void app_init_window();
 static void app_init_vulkan();
 static void app_main_loop();
@@ -112,11 +131,14 @@ static void vk_create_command_pool();
 static void vk_create_command_buffer();
 static void vk_create_sync_objects();
 static void vk_create_vertex_buffer();
-
-void vk_record_command_buffer(VkCommandBuffer commandBuffer,
-			      uint32_t imageIndex);
+static void vk_create_index_buffer();
+static void createUniformBuffers();
+static void vk_record_command_buffer(VkCommandBuffer commandBuffer,
+				     uint32_t imageIndex);
 static void vk_draw_frame();
-
+static void updateUniformBuffer();
+static void createDescriptorPool();
+static void createDescriptorSets();
 void app_run()
 {
 	app_init_window();
@@ -142,40 +164,142 @@ void app_init_vulkan()
 	vk_create_swap_chain();
 	vk_create_image_views();
 	vk_create_render_pass();
+	createUniformBuffers();
+	createDescriptorSetLayout();
+	createDescriptorPool();
+	createDescriptorSets();
 	vk_create_graphics_pipeline();
 	vk_create_framebuffers();
 	vk_create_command_pool();
 	vk_create_vertex_buffer();
+	vk_create_index_buffer();
 	vk_create_command_buffer();
 	vk_create_sync_objects();
 }
 
-void vk_create_vertex_buffer()
+void vk_create_buffer(VkDevice device, VkBuffer *buffer, VkDeviceMemory *memory,
+		      size_t size, VkBufferUsageFlagBits usage)
 {
 	VkBufferCreateInfo bufferInfo = {};
 	bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-	bufferInfo.size = sizeof(vertices[0]) * num_vertices;
-	bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+	bufferInfo.size = size;
+	bufferInfo.usage = usage;
 	bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-	if (vkCreateBuffer(device, &bufferInfo, nullptr, &vertexBuffer) !=
+	if (vkCreateBuffer(device, &bufferInfo, nullptr, buffer) !=
 	    VK_SUCCESS) {
 		fprintf(stderr, "Can't create buffer");
 		exit(1);
 	}
 	VkMemoryAllocateInfo allocInfo = {};
 	allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-	allocInfo.allocationSize = 1024;
+	allocInfo.allocationSize = size;
 	allocInfo.memoryTypeIndex = 0;
-	if (vkAllocateMemory(device, &allocInfo, nullptr,
-			     &vertexBufferMemory) != VK_SUCCESS) {
+	if (vkAllocateMemory(device, &allocInfo, nullptr, memory) !=
+	    VK_SUCCESS) {
 		fprintf(stderr, "Can't allocate memory");
 		exit(1);
 	}
-	vkBindBufferMemory(device, vertexBuffer, vertexBufferMemory, 0);
+	vkBindBufferMemory(device, *buffer, *memory, 0);
+}
+void vk_create_mapped_buffer(VkDevice device, void *src, VkBuffer *buffer,
+			     VkDeviceMemory *memory, size_t size,
+			     VkBufferUsageFlagBits usage)
+{
+	vk_create_buffer(device, buffer, memory, size, usage);
 	void *data;
-	vkMapMemory(device, vertexBufferMemory, 0, bufferInfo.size, 0, &data);
-	memcpy(data, vertices, (size_t)bufferInfo.size);
-	vkUnmapMemory(device, vertexBufferMemory);
+	vkMapMemory(device, *memory, 0, size, 0, &data);
+	memcpy(data, src, (size_t)size);
+	vkUnmapMemory(device, *memory);
+}
+
+void createDescriptorPool()
+{
+	VkDescriptorPoolSize poolSize = {};
+	poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	poolSize.descriptorCount = 1;
+	VkDescriptorPoolCreateInfo poolInfo = {};
+	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+	poolInfo.poolSizeCount = 1;
+	poolInfo.pPoolSizes = &poolSize;
+	poolInfo.maxSets = NUM_DESCRIPTOR_SETS;
+
+	if (vkCreateDescriptorPool(device, &poolInfo, nullptr,
+				   &descriptorPool) != VK_SUCCESS) {
+		fprintf(stderr, "Can't create Descriptor pool");
+		exit(1);
+	}
+}
+void createDescriptorSets()
+{
+	VkDescriptorSetLayout layouts[] = { descriptorSetLayout };
+	VkDescriptorSetAllocateInfo allocInfo = {};
+	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+	allocInfo.descriptorPool = descriptorPool;
+	allocInfo.descriptorSetCount = NUM_DESCRIPTOR_SETS;
+	allocInfo.pSetLayouts = layouts;
+	if (vkAllocateDescriptorSets(device, &allocInfo, descriptorSets) !=
+	    VK_SUCCESS) {
+		fprintf(stderr, "Can't create descriptor sets");
+		exit(1);
+	}
+	VkDescriptorBufferInfo bufferInfo = {};
+	bufferInfo.buffer = uniformBuffer;
+	bufferInfo.offset = 0;
+	bufferInfo.range = sizeof(UniformBufferObject);
+	VkWriteDescriptorSet descriptorWrite = {};
+	descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	descriptorWrite.dstSet = descriptorSets[0];
+	descriptorWrite.dstBinding = 0;
+	descriptorWrite.dstArrayElement = 0;
+	descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	descriptorWrite.descriptorCount = 1;
+	descriptorWrite.pBufferInfo = &bufferInfo;
+	descriptorWrite.pImageInfo = nullptr; // Optional
+	descriptorWrite.pTexelBufferView = nullptr; // Optional
+	vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);
+}
+void createDescriptorSetLayout()
+{
+	VkDescriptorSetLayoutBinding uboLayoutBinding = {};
+	uboLayoutBinding.binding = 0;
+	uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	uboLayoutBinding.descriptorCount = 1;
+	uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
+	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	layoutInfo.bindingCount = 1;
+	layoutInfo.pBindings = &uboLayoutBinding;
+
+	if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr,
+					&descriptorSetLayout) != VK_SUCCESS) {
+		fprintf(stderr, "Can't create descriptor set layout");
+		exit(1);
+	}
+}
+
+void createUniformBuffers()
+{
+	VkDeviceSize bufferSize = sizeof(UniformBufferObject);
+
+	vk_create_buffer(device, &uniformBuffer, &uniformBufferMemory,
+			 bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+
+	vkMapMemory(device, uniformBufferMemory, 0, bufferSize, 0,
+		    &uniformBufferMapped);
+}
+void vk_create_index_buffer()
+{
+	vk_create_mapped_buffer(device, (void *)indices, &indexBuffer,
+				&indexBufferMemory,
+				sizeof(indices[0]) * num_indices,
+				VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+}
+void vk_create_vertex_buffer()
+{
+	vk_create_mapped_buffer(device, (void *)vertices, &vertexBuffer,
+				&vertexBufferMemory,
+				sizeof(vertices[0]) * num_vertices,
+				VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
 }
 void vk_create_sync_objects()
 {
@@ -237,7 +361,12 @@ void vk_record_command_buffer(VkCommandBuffer commandBuffer,
 	VkBuffer vertexBuffers[] = { vertexBuffer };
 	VkDeviceSize offsets[] = { 0 };
 	vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
-	vkCmdDraw(commandBuffer, num_vertices, 1, 0, 0);
+	vkCmdBindIndexBuffer(commandBuffer, indexBuffer, 0,
+			     VK_INDEX_TYPE_UINT16);
+	vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+				pipeline_layout, 0, 1, &descriptorSets[0], 0,
+				nullptr);
+	vkCmdDrawIndexed(commandBuffer, num_indices, 1, 0, 0, 0);
 	vkCmdEndRenderPass(commandBuffer);
 	if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
 		fprintf(stderr, "failed to record command buffer!");
@@ -429,7 +558,7 @@ void vk_create_graphics_pipeline()
 	rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
 	rasterizer.lineWidth = 1.0f;
 	rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-	rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+	rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 	rasterizer.depthBiasEnable = VK_FALSE;
 
 	VkPipelineMultisampleStateCreateInfo multisampling = {};
@@ -454,8 +583,8 @@ void vk_create_graphics_pipeline()
 	VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
 	pipelineLayoutInfo.sType =
 		VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-	pipelineLayoutInfo.setLayoutCount = 0; // Optional
-	pipelineLayoutInfo.pSetLayouts = nullptr; // Optional
+	pipelineLayoutInfo.setLayoutCount = 1; // Optional
+	pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout; // Optional
 	pipelineLayoutInfo.pushConstantRangeCount = 0; // Optional
 	pipelineLayoutInfo.pPushConstantRanges = nullptr; // Optional
 
@@ -729,6 +858,34 @@ bool vk_check_validation_layer()
 	return true;
 }
 
+float interpolate(float from, float to, float progress)
+{
+	return from + progress * (to - from);
+}
+float elapsed = 0;
+float current = 0;
+void updateUniformBuffer()
+{
+	clock_t start = clock();
+	UniformBufferObject ubo = {};
+
+	//ubo.model = rotate(mat4(1.0f), time * radians(90.0f), vec3(0.0f, 0.0f, 1.0f));
+	glm_mat4_identity(ubo.model);
+	current += (elapsed * 50.0f);
+	glm_rotate(ubo.model, current, (vec3){ 0.0f, 0.0f, 1.0f });
+	//ubo.view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+	glm_lookat((vec3){ 2.0f, 2.0f, 2.0f }, (vec3){ 0.0f, 0.0f, 0.0f },
+		   (vec3){ 0.0f, 0.0f, 1.0f }, ubo.view);
+	//ubo.proj = glm::perspective(glm::radians(45.0f), swapChainExtent.width / (float) swapChainExtent.height, 0.1f, 10.0f);
+	glm_perspective(glm_rad(45.0f),
+			swap_chain_extent.width /
+				(float)swap_chain_extent.height,
+			0.1f, 10.0f, ubo.proj);
+	ubo.proj[1][1] *= -1;
+	memcpy(uniformBufferMapped, &ubo, sizeof(ubo));
+
+	elapsed = (clock() - start) / (float)CLOCKS_PER_SEC;
+}
 void vk_draw_frame()
 {
 	vkWaitForFences(device, 1, &in_flight_fence, VK_TRUE, UINT64_MAX);
@@ -754,9 +911,11 @@ void vk_draw_frame()
 	VkSemaphore signalSemaphores[] = { render_finished_semaphore };
 	submitInfo.signalSemaphoreCount = 1;
 	submitInfo.pSignalSemaphores = signalSemaphores;
+	updateUniformBuffer();
 	if (vkQueueSubmit(graphics_queue, 1, &submitInfo, in_flight_fence) !=
 	    VK_SUCCESS) {
 		fprintf(stderr, "Failed to submit command in queue");
+		exit(1);
 	}
 
 	VkPresentInfoKHR presentInfo = {};
@@ -787,6 +946,12 @@ void app_main_loop()
 
 void app_clean_up()
 {
+	vkFreeMemory(device, uniformBufferMemory, nullptr);
+	vkDestroyBuffer(device, uniformBuffer, nullptr);
+	vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+	vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
+	vkFreeMemory(device, indexBufferMemory, nullptr);
+	vkDestroyBuffer(device, indexBuffer, nullptr);
 	vkFreeMemory(device, vertexBufferMemory, nullptr);
 	vkDestroyBuffer(device, vertexBuffer, nullptr);
 	vkDestroySemaphore(device, image_available_semaphore, nullptr);
